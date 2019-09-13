@@ -13,17 +13,15 @@ import backtrader.analyzers
 import pyfolio as pf
 import pandas as pd
 import pandas_datareader as pdr
-#import matplotlib.pyplot as plt
-
+import support_resistance_bt as rs
+import numpy as np
 
 # Create a Stratey
 class TestStrategy(bt.Strategy):
     
     params = (
-        ('exitbars', 5),
-        ('maperiod',20),
-        ('stake',1000),
-        ('printlog',False),
+            ('stake',10),
+            ('feed_days',40),
     )
     
         #Logging function for this strategy
@@ -37,26 +35,26 @@ class TestStrategy(bt.Strategy):
     def __init__(self):
         # Keep a reference to the "close" line in the data[0] dataseries
         self.dataclose = self.datas[0].close
+        self.datahigh = self.datas[0].high
+        self.datalow = self.datas[0].low
         
         # Set the sizer stake from the params
         self.sizer.setsizing(self.params.stake)
-        
-        # Add a MovingAverageSimple indicator
-        self.sma = bt.indicators.SimpleMovingAverage(
-            self.datas[0], period=self.params.maperiod)
-        
+       
         # To keep track of pending orders
         self.order = None
         self.buyprice = None
         self.buycomm = None
+        #起始值
+        self.resistance = 0
+        self.support = 0
+        self.early_res = 0
+        self.early_sup = 0
+        
+        self.rns = rs.Sup_n_res()
         
         
     def notify_order(self, order):
-        #if order.status in [order.Submitted, order.Accepted]:
-        # Buy/Sell order submitted/accepted to/by broker - Nothing to do
-        #    return
-        
-        
         # Check if an order has been completed
         # Attention: broker could reject order if not enough cash
         if order.status in [order.Completed]:
@@ -89,50 +87,59 @@ class TestStrategy(bt.Strategy):
     def next(self):
         # Simply log the closing price of the series from the reference
         self.log('Close: %.2f' % self.dataclose[0]+'  Position Size: %.0f' % self.position.size)
-
-        # Check if an order is pending ... if yes, we cannot send a 2nd one
-        #if self.order:
-        #    return
-
-        # Check if we are in the market
-        if not self.position.size >= 10000 and not self.position.size <= -10000:
-
-            # Not yet ... we MIGHT BUY if ...
-            if self.dataclose[0] > self.sma[0]:
-
-                # BUY, BUY, BUY!!! (with default parameters)
-                self.log('Buy Create: %.2f' % self.dataclose[0])
-
-                # Keep track of the created order to avoid a 2nd order
-                buy_limit = 1.2 * self.dataclose[0]
-                buy_stop = 0.9 * self.dataclose[0]
-                self.order = self.buy_bracket(stopprice=buy_stop,limitprice=buy_limit,
-                                              exectype=bt.Order.Limit)
-                #self.order = self.buy_bracket(price=self.dataclose[0],stopprice=stop_price)
-
-        #else:
-            # Already in the market ... we might sell
-            if self.dataclose[0] < self.sma[0]:
-                # SELL, SELL, SELL!!! (with all possible default parameters)
-                self.log('Sell Create: %.2f' % self.dataclose[0])
-
-                # Keep track of the created order to avoid a 2nd order
-                sell_stop = 1.1 * self.dataclose[0]
-                sell_limit = 0.8 * self.dataclose[0]
-                self.order = self.sell_bracket(stopprice=sell_stop,limitprice=sell_limit,
-                                               exectype=bt.Order.Limit)
-
+        
+        #部位控制
+        if not self.position.size >= self.params.stake * 10 and not self.position.size <= -self.params.stake * 10:
+            #判斷壓力支撐，需要有至少40天以上的資料
+            if self.dataclose[-self.params.feed_days]:
+                rev_high,rev_low = [],[]
+                for i in range(self.params.feed_days):    #backtrader的排序方式要轉換一下順序
+                    rev_high.append(self.datahigh[-i])
+                    rev_low.append(self.datalow[-i])
+                high,low = [],[]
+                for price in reversed(rev_high):
+                    high.append(price)        
+                for price in reversed(rev_low):
+                    low.append(price)        
+                
+                self.rns.high=np.array(high)
+                self.rns.low=np.array(low)
+                self.rns.identify() 
+    
+                if self.resistance == 0 and self.rns.last_res:             #0值後第一個有值就取代
+                    self.resistance = self.rns.last_res
+                if self.support == 0 and self.rns.last_sup:
+                    self.support = self.rns.last_sup
+                if self.rns.last_res and self.rns.last_res < self.resistance:   #更新
+                    self.resistance = self.rns.last_res
+                if self.rns.last_sup and self.rns.last_sup > self.support:
+                    self.support = self.rns.last_sup
+                
+                if self.resistance > 0 and self.dataclose[0] > self.resistance:   #價格突破壓力
+                    if self.resistance != self.early_res:
+                        buy_limit = 1.2 * self.dataclose[0]
+                        buy_stop = 0.9 * self.dataclose[0]
+                        self.order = self.buy_bracket(stopprice=buy_stop,limitprice=buy_limit,exectype=bt.Order.Limit)
+                        self.early_res = self.resistance
+                        self.resistance = 0       #突破後壓力值重置                        
+                if self.support > 0 and self.dataclose[0] < self.support: #跌破支撐
+                    if self.support != self.early_sup:
+                        sell_limit = 0.8 * self.dataclose[0]
+                        sell_stop = 1.1 * self.dataclose[0]
+                        self.order = self.sell_bracket(stopprice=sell_stop,limitprice=sell_limit,exectype=bt.Order.Limit)
+                        self.early_sup = self.support
+                        self.support = 0
+                           
     def stop(self):
         #self.log('(MA Period %2d) Ending Value %.2f' %
         #         (self.params.maperiod, self.broker.getvalue()), doprint=True)
         pass
-    
 
 # Create a cerebro entity
 cerebro = bt.Cerebro()
 
 # Set our desired cash start
-startcash = 10000000
+startcash = 1000000
 cerebro.broker.setcash(startcash)
 
 # Add a strategy
@@ -146,16 +153,14 @@ cerebro.addanalyzer(bt.analyzers.PyFolio)
 
 
 # Create a Data Feed
-df_data = pdr.DataReader('2201.TW','yahoo', '2015-1-1')
+df_data = pdr.DataReader('AAPL','yahoo', start='2010-1-1')
 data0 = bt.feeds.PandasData(dataname=df_data,timeframe=1,openinterest=None)
+
 # Add the Data Feed to Cerebro
 cerebro.adddata(data0)
 
 # Set commision
 cerebro.broker.setcommission(commission=0.001)
-
-# Add a FixedSize sizer according to the stake
-#cerebro.addsizer(bt.sizers.FixedSize, stake=10)   #改寫在init裡
 
 # Print out the starting conditions
 print('Starting Portfolio Value:$ %.2f' % cerebro.broker.getvalue())
