@@ -8,6 +8,7 @@ Created on Tue Jul 23 20:26:35 2019
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 from datetime import datetime
+from data import *
 import backtrader as bt
 import backtrader.analyzers
 import pyfolio as pf
@@ -16,11 +17,12 @@ import pandas_datareader as pdr
 import support_resistance_bt as rs
 import numpy as np
 
+
 # Create a Stratey
 class TestStrategy(bt.Strategy):
     
     params = (
-            ('stake',10),
+            ('stake',100),
             ('feed_days',40),
     )
     
@@ -151,10 +153,12 @@ cerebro.addstrategy(TestStrategy)
 # Add the analyzers we are interested in
 cerebro.addanalyzer(bt.analyzers.PyFolio)
 
-
 # Create a Data Feed
-df_data = pdr.DataReader('AAPL','yahoo', start='2010-1-1')
-data0 = bt.feeds.PandasData(dataname=df_data,timeframe=1,openinterest=None)
+frequency = 'day'  # day, minute, hour
+ticker = 'BTC'
+data_quantity = 2000  # max limit
+df = get_crypto_from_api(ticker, data_quantity, frequency)
+data0 = bt.feeds.PandasData(dataname=df, timeframe=1, openinterest=None)
 
 # Add the Data Feed to Cerebro
 cerebro.adddata(data0)
@@ -183,12 +187,4 @@ print('Final Portfolio Value:$ %.2f' % portvalue)
 print('Profit & Loss:$ %.2f' % pnl)
 
 # print pyfolio results
-#pf.create_full_tear_sheet(my_returns,positions=my_positions,transactions=my_transactions,)  
-#plt.show()
-# Plot
-
-
-
-
-#figure = cerebro.plot()
-#figure.savefig('example.png',dpi=300)
+#pf.create_full_tear_sheet(my_returns, my_positions, my_transactions, my_gross_lev)  
